@@ -1,0 +1,533 @@
+#Packages----
+require(cluster)
+require(useful)
+require(Hmisc)
+library(HSAUR)
+library(MVA)
+library(HSAUR2)
+library(fpc)
+library(mclust)
+library(lattice)
+library(car)
+library(ggplot2)
+library(tidyverse)
+library(Rtsne)
+
+#Data----
+alldata = read.csv("Melbourne_housing_FULL.csv",header=TRUE)
+houses = alldata[complete.cases(alldata),]
+print(str(houses))
+
+#subset does not include: 
+#suburb, address, type (could be useful), 
+#method (of sale), sellerG, Date, Postcode (could be useful)
+#CouncilArea (could be useful), Lattitude, Longitude, Regionname, Propertycount (could be useful)
+
+#GOAL: Identify types of houses (so Type could help reaffirm this)
+#INSIGHT: help marketing activities
+#INSIGHT: help assign territories to realtors
+#INSIGHT: appraise the valeu of properties for sale 
+#INSIGHT: ID properties that are undervalued compared to similar properties 
+
+workdata = houses[,c("Rooms",
+                     "Price",
+                     "Distance",
+                     "Bedroom2",
+                     "Bathroom",
+                     "Car",
+                     "Landsize",
+                     "BuildingArea",
+                     "YearBuilt")]
+
+print(str(workdata))
+
+#No Missing Values ----
+
+library(DataExplorer, quietly = TRUE)
+
+plot_missing(workdata)
+
+summary(workdata)
+
+#Factor to Integer (Distance)----
+workdata$Distance <- as.integer(workdata$Distance)
+hist(workdata$Distance)
+
+str(workdata)
+
+#Correlation Plot----
+library(corrplot)
+library(gplots)
+corrplot(cor(workdata),order='hclust', tl.cex = .7, tl.col = 'blue', addrect = 4)
+
+names(workdata)
+
+
+#Check for Skewness and Kurtosis----
+
+#Remove any visible outliers 
+#skewness -1 0.5 or 0.5 to 1
+#kurtosis greater than 3 
+
+library(moments)
+workdata_filtered <- workdata
+
+#Rooms < 9
+skewness(workdata$Rooms)
+kurtosis(workdata$Rooms) #4.379 is high
+boxplot(workdata$Rooms)
+workdata_filtered <- subset(workdata_filtered, workdata_filtered$Rooms < 9)
+
+#<8 MM 
+skewness(workdata$Price) #2.41
+kurtosis(workdata$Price) #14.03668 is high
+boxplot(workdata$Price)
+workdata_filtered <- subset(workdata_filtered, workdata_filtered$Price < 8000000)
+
+#Distance OK
+skewness(workdata$Distance)
+kurtosis(workdata$Distance)
+boxplot(workdata$Distance)
+
+#Filter, Bedroom2 < 9
+skewness(workdata$Bedroom2)
+kurtosis(workdata$Bedroom2) #kurtosis 4.67 
+boxplot(workdata$Bedroom2)
+workdata_filtered <- subset(workdata_filtered, workdata_filtered$Bedroom2 < 9)
+
+#Filter, Bathroom < 6 
+skewness(workdata$Bathroom) #1.26
+kurtosis(workdata$Bathroom) #6.66
+boxplot(workdata$Bathroom)
+workdata_filtered <- subset(workdata_filtered, workdata_filtered$Bathroom < 6)
+
+#Filter, Car < 6 
+skewness(workdata$Car) #11.42
+kurtosis(workdata$Car) #8.30
+boxplot(workdata$Car)
+workdata_filtered <- subset(workdata_filtered, workdata_filtered$Car < 6)
+
+#Landsize < 30000 (3 outliers)
+skewness(workdata$Landsize) #23.11
+kurtosis(workdata$Landsize) #748.91
+boxplot(workdata$Landsize)
+workdata_filtered <- subset(workdata_filtered, workdata_filtered$Landsize > 1)
+workdata_filtered <- subset(workdata_filtered, workdata_filtered$Landsize < 30000)
+
+#Buildingarea < 1500 (2 outliers)
+skewness(workdata$BuildingArea) #6.50
+kurtosis(workdata$BuildingArea) #162.625
+boxplot(workdata$BuildingArea)
+
+workdata_filtered <- subset(workdata_filtered, workdata_filtered$BuildingArea < 900)
+workdata_filtered <- subset(workdata_filtered, workdata_filtered$BuildingArea > 1)
+boxplot(workdata_filtered$BuildingArea)
+
+#YearBuilt > 1899 
+skewness(workdata$YearBuilt) #-1.49
+kurtosis(workdata$YearBuilt) #23.16
+boxplot(workdata$YearBuilt)
+
+workdata_filtered <- subset(workdata_filtered, workdata_filtered$YearBuilt > 1850)
+boxplot(workdata_filtered$YearBuilt)
+
+
+
+#need to prep houses data same way that workdata_filtered was prepped ----
+houses2 <- houses
+houses2$Distance <- as.integer(houses2$Distance)
+houses2 <- subset(houses2, houses2$Rooms < 9)
+houses2 <- subset(houses2, houses2$Price < 8000000)
+houses2 <- subset(houses2, houses2$Bedroom2 < 9)
+houses2 <- subset(houses2, houses2$Bathroom < 6)
+houses2 <- subset(houses2, houses2$Car < 6)
+houses2 <- subset(houses2, houses2$Landsize > 1)
+houses2 <- subset(houses2, houses2$Landsize < 30000)
+houses2 <- subset(houses2, houses2$BuildingArea < 900)
+houses2 <- subset(houses2, houses2$BuildingArea > 1)
+houses2 <- subset(houses2, houses2$YearBuilt > 1850)
+
+#Visualize BuildingArea----
+#PARAMETERS 
+par(mfrow = c(2,3))
+
+
+#######----ORIGINAL DATA----#########
+#histogram
+hist(workdata$BuildingArea,
+     main = "Histogram - BuildingArea",
+     xlab = "(Original Data)",
+     col = "steelblue")
+
+#qqplot 
+qqnorm(workdata$BuildingArea,
+       col = ifelse(workdata_filtered$BuildingArea %in% 
+                      c(boxplot.stats(workdata_filtered$BuildingArea)$out), #red for outliers
+                    "red","black"),
+       xlab = "(Original Data)")
+
+qqline(workdata$BuildingArea)
+
+#boxplot
+boxplot(workdata$BuildingArea,
+        main = "Boxplot - BuildingArea < 1500",
+        ylab = "Meters",
+        xlab = "(Original Data)")
+
+#######----NO OUTLIERS----#########
+
+#histogram
+hist(workdata_filtered$BuildingArea,
+     main = "Histogram - BuildingArea",
+     xlab = "(Removed Outliers)",
+     col = "steelblue")
+
+#qqplot 
+qqnorm(workdata_filtered$BuildingArea,
+       col = ifelse(workdata_filtered$BuildingArea %in% 
+                      c(boxplot.stats(workdata_filtered$BuildingArea)$out), #red for outliers
+                    "red","black"),
+       xlab = "(Removed Outliers)")
+
+qqline(workdata_filtered$BuildingArea)
+
+#boxplot
+boxplot(workdata_filtered$BuildingArea,
+        main = "Boxplot - BuildingArea < 1500",
+        ylab = "Meters",
+        xlab = "(Removed Outliers)")
+
+#Normalization ----
+
+summary(workdata_filtered)
+
+#min max scaling/normalization
+normalize <- function(x)
+{
+    return((x- min(x)) /(max(x)-min(x)))
+}
+
+#lapply function normalize to pewdata_sub_q_ALL_numframe2
+workdata_filtered_norm <- as.data.frame(lapply(workdata_filtered, FUN=normalize))
+
+#preview
+head(workdata_filtered_norm,5)
+tail(workdata_filtered_norm,5)
+
+#Scree----
+library(psych)
+library(lessR)
+
+fa.parallel(workdata_filtered_norm, fa="both", n.iter=100, show.legend=TRUE,main="Scree plot with parallel analysis")
+
+#Principal Component Analysis (PCA)----
+pca <-princomp(workdata_filtered_norm)
+my.pca <- prcomp(workdata_filtered_norm)
+
+#View importance of components
+#first PC 57% proportion of variance
+#second PC 9.3% proprotion of variance
+#third PC 6.2% proportion of variance
+#fourth PC 3.3% proportion of variance
+summary(my.pca)
+
+#Interpret PCA rotation loadings 
+my.pca$rotation
+
+#Factor Analysis----
+#No Rotation, 3 factors
+fa1<-fa(workdata_filtered_norm, nfactors=4, rotate="none", fm="pa")
+summary(fa1)
+fa1$loadings
+
+#heatmap and sempath----
+
+library(gplots)
+library(RColorBrewer)
+library(semPlot)
+
+heatmap.2(fa1$loadings,
+          col=brewer.pal(9,"Blues"), trace="none", key=FALSE,
+          Colv=FALSE, 
+          cexCol = 1.2, cexRow = .7,
+          dend="none", lwid=c(0.1,1), lhei=c(0.1,2)
+          )
+
+semPaths(fa1$loadings, what="est", residuals=FALSE,
+         cut=0.5, posCol=c("white","darkgreen"), negCol=c("white","red"),
+         edge.label.cex=1, nCharNodes=8, sizeMan = 7)
+
+#######################################################
+### Create a Kmeans with 3 clusters with derived data #
+#######################################################
+set.seed(10)
+clusterresults <- kmeans(x = workdata_filtered_norm,centers = 4)
+names(clusterresults)
+
+
+#Between Sum of Squares / Total Sum of Squares Goodness to Fit 
+#K-Means
+rsquare <- clusterresults$betweenss/clusterresults$totss
+rsquare
+
+#K-Means, 4 clusters 
+
+#MAC CAN'T HANDLET HIS
+#plot(clusterresults, data = workdata_filtered_norm)
+
+
+dissE <- daisy(workdata_filtered_norm)
+names(dissE)
+dE2   <- dissE^2
+
+sk2   <- silhouette(clusterresults$cluster, dE2)
+str(sk2)
+plot(sk2)
+
+#clusterresults cluster as dataframe
+newdf <- as.data.frame(clusterresults$cluster)
+pcadf <- as.data.frame(pca$scores)
+
+write.csv(newdf, file = "clusterresults.csv")
+write.csv(pcadf, file = "pca.csv")
+
+combdata <- cbind(newdf,pcadf)
+head(combdata)
+
+#xyplot of the 7 groups 
+xyplot(Comp.2 ~ Comp.1, combdata, groups = clusterresults$cluster, pch= 20)
+
+###############################################
+## Hierarchical Clustering with derived data ##----
+###############################################
+
+numsub.dist = dist(workdata_filtered_norm) #Euclidean distance
+
+require(maptree)
+
+hclustmodel <- hclust(dist(workdata_filtered_norm), method = 'ward.D2')
+names(hclustmodel)
+plot(hclustmodel)
+
+#hclust, k=3
+cut.4 <- cutree(hclustmodel, k=4)
+cut.4
+
+plot(silhouette(cut.4,numsub.dist))
+head(cut.4)
+
+########################################
+##for hclust how to calculate BSS & TSS----
+######################################
+require(proxy)
+numsubmat <- as.matrix(workdata_filtered_norm)
+overallmean <- matrix(apply(numsubmat,2,mean),nrow=1)
+overallmean
+TSS <- sum(dist(numsubmat,overallmean)^2)
+TSS
+
+
+####################################
+#Compute WSS based on 3 clusters----
+######################################
+combcutdata <- cbind(workdata_filtered_norm,cut.4)
+head(combcutdata)
+
+require(reshape)
+combcutdata <- rename(combcutdata, c(cut.4="cluster"))
+head(combcutdata)
+#################################################################################
+
+clust1 <- subset(combcutdata, cluster == 1)
+clust1 <- subset(clust1, select=c("Rooms","Price","Distance","Bedroom2","Bathroom","Car",
+                                  "Landsize","BuildingArea","YearBuilt"))
+clust1 <- as.matrix(clust1,rowby=T)
+dim(clust1)
+clust1mean <- matrix(apply(clust1,2,mean),nrow=1)
+dim(clust1mean)
+dis1 <- sum(dist(clust1mean,clust1)^2)
+
+#################################################################################
+clust2 <- subset(combcutdata, cluster == 2)
+clust2 <- subset(clust2, select=c("Rooms","Price","Distance","Bedroom2","Bathroom","Car",
+                                  "Landsize","BuildingArea","YearBuilt"))
+clust2 <- as.matrix(clust2,rowby=T)
+clust2mean <- matrix(apply(clust2,2,mean),nrow=1)
+dis2 <- sum(dist(clust2mean,clust2)^2)
+
+#################################################################################
+
+clust3 <- subset(combcutdata, cluster == 3)
+clust3 <- subset(clust3, select=c("Rooms","Price","Distance","Bedroom2","Bathroom","Car",
+                                  "Landsize","BuildingArea","YearBuilt"))
+clust3 <- as.matrix(clust3,rowby=T)
+clust3mean <- matrix(apply(clust3,2,mean),nrow=1)
+dis3 <- sum(dist(clust3mean,clust3)^2)
+
+#################################################################################
+
+clust4 <- subset(combcutdata, cluster == 4)
+clust4 <- subset(clust4, select=c("Rooms","Price","Distance","Bedroom2","Bathroom","Car",
+                                  "Landsize","BuildingArea","YearBuilt"))
+clust4 <- as.matrix(clust4,rowby=T)
+clust4mean <- matrix(apply(clust4,2,mean),nrow=1)
+dis4 <- sum(dist(clust4mean,clust4)^2)
+
+#################################################################################
+
+WSS <- sum(dis1,dis2,dis3,dis4)
+WSS
+
+BSS <- TSS - WSS
+BSS
+## calculating the % of Between SS/ Total SS
+rsquare <- BSS/TSS
+rsquare
+
+#kmeans
+#r square =  0.5362854
+#avg. silhouette length =  0.37
+
+#hclust
+#r square = 0.5069
+#avg. silhouette length = 0.21
+
+#clean split with kmeans 4 clusters
+#kmeans seems to fit better, and the visualization is clear
+
+#tsne----
+tsne <- Rtsne(workdata_filtered_norm, dims = 2, perplexity = 50, verbose = TRUE, max_iiter=5000, learning=2000, check_duplicates=FALSE)
+
+#visualizing
+colors = rainbow(length(unique(clusterresults$cluster)))
+names(colors) = unique(clusterresults$cluster)
+par(mgp=c(2.5,1,0))
+plot(tsne$Y, t='n', main = 'tSNE', xlab = 'tSNE dimension 1', ylab = 'tSNE dimension 2', cex.main = 2, cex.lab = 1.5)
+text(tsne$Y, labels = clusterresults$cluster, col = colors[clusterresults$cluster])
+
+#t-SNE affirms that there are distinct groups, found through kMeans
+
+################################################################
+### Create a dataset with the original data with the cluster info----
+### This will be useful for creating profiles for the clusters----
+###############################################################
+
+head(newdf) #cluster results 
+head(houses2) #raw data
+head(workdata_filtered) #only numerical
+
+workdata_filtered$Pricesqm <- workdata_filtered$Price/workdata_filtered$BuildingArea
+
+#cluster profiles + numerical data ONLY, without outliers
+combdata2 <- cbind(newdf, workdata_filtered)
+
+#Rename column
+require(reshape)
+names(combdata2)
+combdata2 <- rename(combdata2, c("clusterresults$cluster"="cluster"))
+
+#Aggregate columns by group 
+output_clusteraggregates <- aggregate(combdata2,by=list(byvar=combdata2$cluster), median)
+output_clusteraggregates
+
+aggregate(combdata2,by=list(byvar=combdata2$cluster), mean)
+
+write.csv(output_clusteraggregates, file = "output_clusteraggregates.csv")
+
+
+#clustering solution vs actual type of housing----
+combdata3 <- cbind(newdf, houses2$Type)
+
+head(combdata3)
+
+levels(houses2$Type) #h t u 
+
+color_vector <- c("grey",  "cadetblue1", "yellow", "green1")
+
+table <- table(combdata3)
+table
+
+
+barplot(height = table,
+        beside = TRUE, 
+        legend.text = c("1","2","3","4"),
+        col = color_vector,
+        xlab = "Cluster",
+        ylab = "Frequency",
+        main = "Barplot: TYPE and CLUSTER",
+        args.legend = list(x = "topright", bty = "n", inset=c(0, .05)))
+
+df_clu <- c("1","2","3","4")
+df_h <- c(1599,1132,1675,2022)
+df_t <- c(131,212,64,221)
+df_u <- c(319,52,262,46)
+df_clusters <- data.frame(df_clu, df_h, df_t, df_u)
+
+#group 1 - smallest proportion of homes are houses/cottages/villa/semi/terrace relative to other groups
+#group 1 - largest proportion of homes are unit/duplex 
+#group 2 - smallest cluster
+#group 2 - largest proportion are townhouses relative to other clusters 
+#group 3 - smallest proportion are townhouses relative to other clusters 
+#group 4 - overall largest cluster, concentrated in h, smallest concentration of unit/duplex 
+
+df_clusters$cluster_totals <- df_clusters$df_h + df_clusters$df_t + df_clusters$df_u
+df_clusters$prop_h <- round(df_clusters$df_h / df_clusters$cluster_totals,2)
+df_clusters$prop_t <- round(df_clusters$df_t / df_clusters$cluster_totals,2)
+df_clusters$prop_u <- round(df_clusters$df_u / df_clusters$cluster_totals,2)
+
+df_clusters
+
+write.csv(df_clusters, file = "output_df_clusters.csv")
+
+
+#suburb frequency counts per cluster----
+combdata4 <- cbind(newdf, houses2$Suburb)
+head(combdata4)
+levels(houses2$Suburb)
+
+library(plyr)
+
+#dataframe with frequency counts 
+combdata4b <- as.data.frame(count(combdata4, c("clusterresults$cluster","houses2$Suburb")))
+
+#frequencies 
+combdata4b <- rename(combdata4b, c("clusterresults.cluster"="cluster", "houses2.Suburb" = "suburb"))
+
+#sort by multiple columns
+combdata4b <- combdata4b[
+  with(combdata4b, order(cluster, -freq)),
+]
+
+
+combdata4b
+
+write.csv(combdata4b, "output_clustersuburbcount.csv")
+
+
+#Leaflet.js Interactive Map ----
+#https://stackoverflow.com/questions/37980290/map-australian-cities-r-spatial
+
+combdata6 <- cbind(newdf, houses2$Lattitude,  houses2$Longtitude)
+names(combdata6)
+combdata7 <- rename(combdata6, c("clusterresults$cluster" = "cluster", "houses2$Lattitude" = "latitude", "houses2$Longtitude" = "longitude"))
+#combdata7$cluster <- as.factor(combdata7$cluster)
+head(combdata7)
+
+library(maps)
+
+library(leaflet)
+
+## define a palette for hte colour
+
+pal2 <- leaflet::colorFactor(palette = c("1" = "red", 
+                                           "2" = "yellow", 
+                                           "3" = "pink",
+                                         "4" = "blue"), 
+                               domain = combdata$cluster)
+
+leaflet(data = combdata7) %>%
+    addTiles() %>%
+    addCircleMarkers(lat = ~latitude, lng = ~longitude, popup=~cluster, color = pal2(combdata7$cluster), fillOpacity = .02, radius = .1) %>%
+  addLegend("bottomright", pal = pal2, values = ~cluster
+  )
+                    
